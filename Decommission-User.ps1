@@ -25,24 +25,17 @@ Import-Module ActiveDirectory
 #  Defined Variables
 #==================================================================================================================
 $DomainController = "zeus.augen.co.nz"
-$DMZDomainController = "juliet.augen.co.nz"
-$VNDomainController = "vndc.augensoftwaregroup.com"
+$DMZDomainController = "juliet.dmz.local"
+$VNDomainController = "vndc.augensoftwaregroup.com.vn"
 $ExchangeServer = "http://zeus.augen.co.nz"
 $LyncServer ="https://Lync02.augen.co.nz"
 $FormerEmployeeOU = "OU=FormerAugeneersNZ,OU=FormerEmployees,OU=Users,OU=Augenland,DC=augen,DC=co,DC=nz"
-$DMZFormerEmployeeOU = "OU=NZ,OU=FormerAugeneer,OU=Users,OU=Augen-DMZ,DC=dmz,DC=local"
-$VNFormerEmployeeOU = "OU=NZ,OU=FormerAugeneers,OU=Users,OU=AugenVN,DC=augensoftwaregroup,DC=com"
+$DMZFormerEmployeeOU = "OU=NZ,OU=FormerAugenneer,OU=Users,OU=Augen-DMZ,DC=dmz,DC=local"
+$VNFormerEmployeeOU = "OU=NZ,OU=FormerAugeneers,OU=Users,OU=AugenVN,DC=augensoftwaregroup,DC=com,DC=vn"
 $HomeDrivePath = "\\Umbriel.augen.co.nz\Staff\"
 $InputList = "C:\Temp\Users.csv"
 $DMZCredentials = 0
 $VNCredentials = 0
-Write-Host "Here"
-#==================================================================================================================
-#  Create Sessions to Domain Resources
-#==================================================================================================================
-Write-Verbose "Connecting to Powershell Sessions on remote platforms"
-$ExchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "$ExchangeServer/PowerShell" -Authentication Kerberos 
-$LyncSession = New-PSSession -ConnectionUri "$lyncServer/ocsPowershell" -Authentication NegotiateWithImplicitCredential
 
 #==================================================================================================================
 #  Create Domain Resource Credentials
@@ -50,6 +43,28 @@ $LyncSession = New-PSSession -ConnectionUri "$lyncServer/ocsPowershell" -Authent
 Write-Verbose "Prompting for other domain credentials"
 $DMZCredentials = Get-Credential -Message "Please enter your full DMZ Domain credentials" -UserName $ENV:USERNAME@dmz.local
 $VNCredentials = Get-Credential -Message "Please enter your full Vietnam Domain Credentials" -Username $ENV:USERNAME@augensoftwaregroup.com.vn
+
+#==================================================================================================================
+#  Create Sessions to Domain Resources
+#==================================================================================================================
+Write-Verbose "Connecting to Powershell Sessions on remote platforms"
+$ExchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "$ExchangeServer/PowerShell" -Authentication Kerberos 
+$LyncSession = New-PSSession -ConnectionUri "$lyncServer/ocsPowershell" -Authentication NegotiateWithImplicitCredential
+New-PSDrive `
+    –Name DMZAD `
+    –PSProvider ActiveDirectory `
+    –Server $DMZDomainController `
+    –Credential $DMZCredentials `
+    –Root "//RootDSE/" `
+    -Scope Global
+
+New-PSDrive `
+    –Name VNAD `
+    –PSProvider ActiveDirectory `
+    –Server $VNDomainController `
+    –Credential $VNCredentials `
+    –Root "//RootDSE/" `
+    -Scope Global
 
 #==================================================================================================================
 #  Script
@@ -73,20 +88,22 @@ Import-PSSession $LyncSession
 
 # Do the heavy lifting
 foreach ($user in $Users) {
+    Write-Verbose "Loop Started:"
     Write-Host "Processing User: $user"
     Write-Verbose "Processing user: $user - $Users.Length"
     $VNUser = $True
     $DMZUser = $True
     # Get DN of Users for each domain
     $AugenUserDN = (Get-ADUser -Identity $user -Server zeus.augen.co.nz).DistinguishedName
+    Write-Host ("AugenUserDN Set to: {0}" -f $AugenUserDN)
     try {
-        $DMZUserDN = (Get-ADUser -Identity $user -Server Juliet.dmz.local -Credential $DMZCredentials).DistinguishedName
+        $DMZUserDN = (Get-ADUser -Identity $user -Server $DMZDomainController -Credential $DMZCredentials).DistinguishedName
     } catch {
         Write-Host "No Account found in the DMZ Domain"
         $DMZUser = $false
     }
     try {
-        $VNUserDN = (Get-ADUser -Identity $user -Server Juliet.dmz.local -Credential $VNCredentials).DistinguishedName
+        $VNUserDN = (Get-ADUser -Identity $user -Server $VNDomainController -Credential $VNCredentials).DistinguishedName
     } catch {
         $VNUser = $false
         Write-Host "No Account found in the VN Domain"
@@ -95,6 +112,7 @@ foreach ($user in $Users) {
     # Disable Account in each domain
     Disable-ADAccount -Identity $AugenUserDN -Server $DomainController
     if ($DMZUser) {
+        Write-Host ("Variables: DMZUserDN - {0} || DMZDomainController - {1} || DMZUser {2}" -f $DMZUserDN,$DMZDomainController,$DMZUser)
         Disable-ADAccount -Identity $DMZUserDN -Server $DMZDomainController -Credential $DMZCredentials
     }
     if ($VNUser){
@@ -104,19 +122,19 @@ foreach ($user in $Users) {
     # Move AD Account to Former User OU
     Move-ADObject -Identity $AugenUserDN -TargetPath $FormerEmployeeOU -Server $DomainController
     if ($DMZUser) {
-        Move-ADObject -Identity $DMZUserDN -TargetPath $DMZFormerEmployeeOU -Server $DMZDomainController
+        Move-ADObject -Identity $DMZUserDN -TargetPath $DMZFormerEmployeeOU -Server $DMZDomainController -Credential $DMZCredentials
     }
     if ($VNUser) {
-        Move-ADObject -Identity $VNUserDN -TargetPath $VNFormerEmployeeOU -Server $VNDomainController
+        Move-ADObject -Identity $VNUserDN -TargetPath $VNFormerEmployeeOU -Server $VNDomainController -Credential $VNCredentials
     }
 
     # Get new DN as original one has now been moved
     $AugenUserDN = (Get-ADUser -Identity $user -Server zeus.augen.co.nz).DistinguishedName
     if ($DMZUser) {
-        $DMZUserDN = (Get-ADUser -Identity $user -Server Juliet.dmz.local -Credential $DMZCredentials).DistinguishedName
+        $DMZUserDN = (Get-ADUser -Identity $user -Server $DMZDomainController -Credential $DMZCredentials).DistinguishedName
     }
     if ($VNUser) {
-        $VNUserDN = (Get-ADUser -Identity $user -Server Juliet.dmz.local -Credential $VNCredentials).DistinguishedName
+        $VNUserDN = (Get-ADUser -Identity $user -Server $VNDomainController -Credential $VNCredentials).DistinguishedName
     }
     # Remove Existing Group Membership 
     $groups = Get-ADUser -Identity $AugenUserDN -Properties memberof -Server $DomainController
@@ -125,30 +143,37 @@ foreach ($user in $Users) {
     write-host "Number of Groups = $($groups.memberof.count)"
         foreach ($group in $groups.memberof) {
             if (!($group -eq "Domain Users")) {
+                
                 Remove-ADGroupMember $group -Members $AugenUserDN -confirm:$false
             }
         }
     }
     if ($DMZUser) {
+        CD DMZAD:
         $groups = Get-ADUser -Identity $DMZUserDN -Properties memberof -Server $DMZDomainController
         if (!($groups.MemberOf.Count -eq 0)) {
             foreach ($group in $groups.memberof) {
                 if (!($group -eq "Domain Users")) {
-                    Remove-ADGroupMember $group -Members $AugenUserDN -confirm:$false
+                    Remove-ADGroupMember $group -Members $DMZUserDN -confirm:$false 
                 }
             }
         }
+        CD C:
     }
     if ($VNUser) {
-        $groups = Get-ADUser -Identity $VNUserDN -Properties memberof -Server $VNDomainController | Remove-ADGroupMember -Members $VNUserDN | Where-Object {$_.Name -ne "Domain Users"}
+        CD VNAD:
+        $groups = Get-ADUser -Identity $VNUserDN -Properties memberof -Server $VNDomainController 
         if (!($groups.MemberOf.Count -eq 0)) {
             foreach ($group in $groups.memberof) {
                 if (!($group -eq "Domain Users")) {
-                    Remove-ADGroupMember $group -Members $AugenUserDN -confirm:$false
+                    Remove-ADGroupMember $group -Members $VNUserDN -confirm:$false
                 }
             }
         }
+        CD C:
     }
+
+    CD C:
 
     # Rename Mailbox
     $DisplayName = Get-ADUser -Identity $AugenUserDN
@@ -157,12 +182,14 @@ foreach ($user in $Users) {
 
     # Disable Lync Account
     $SIPAddress = Get-ADUser -Identity $AugenUserDN -properties proxyaddresses | Select -ExpandProperty proxyaddresses | Select-String -Pattern "SIP:"
-    Disable-CSUser -Identity $SIPAddress
+    Disable-CSUser (Get-ADUser -Identity $AugenUserDN).SAmAccountNAme
     Remove-PSSession $LyncSession
 
     # Move Home Drive
-    if (Test-Path -Path $HomeDrivePath\(Get-ADUser -Identity $AugenUserDN).Name) {
-        Move-Item -Path "$HomeDrivePath\(Get-ADUser -Identity $AugenUserDN).Name" -Destination "$HomeDrivePath\FormerEmployees\(Get-ADUser -Identity $AugenUserDN).Name"
+    $Path = "$HomeDrivePath$((Get-ADUser -Identity $AugenUserDN).SamAccountName)"
+    $NewPath = "$HomeDrivePath" + "FormerEmployees\$((Get-ADUser -Identity $AugenUserDN).SamAccountName)"
+    if (Test-Path -Path $Path) {
+        Move-Item -Path $Path -Destination $NewPath
     }
 
 
@@ -170,3 +197,5 @@ foreach ($user in $Users) {
 
 Remove-PSSession $ExchangeSession
 Remove-PSSession $LyncSession
+Remove-PSDrive VNAD
+Remove-PSDrive DMZAD
